@@ -1,20 +1,4 @@
-#!/usr/bin/env python3
 
-# Copyright 2021 Clearpath Robotics, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-# @author Roni Kreinin (rkreinin@clearpathrobotics.com)
 
 import threading
 import time
@@ -39,34 +23,105 @@ from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
-# Agent State
 
-
-
-   
+#pose.orientation is a quaternion, this converts it to an angle which represents the global heading of the robot
+def quaternion_to_heading_angle(q):
+    """
+    Finds the heading angle of the robot from its quaternion orientation
+    :param q: quaternion rotation from ROS msg
+    :return:
+    """
+    return np.arctan2(2 * (q.w * q.z + q.x * q.y),
+                      1 - 2 * (q.y * q.y + q.z * q.z))
 class AgentController(Node):
-
-    def __init__(self,i,neighbors):
+    def __init__(self,i,neighbors,namespace,mode = 0):
         super().__init__('AgentController')
-        self.agent = 'robot'+str(i)
+        self.agent_name = 'robot'+str(i)
+        self.namespace= namespace
         self.id = i
         self.neighbors= neighbors
-        #self.X = np.zeros((len(neighbors),2))
         self.X = dict.fromkeys(neighbors)
         self.trackedNeighbors = dict.fromkeys(neighbors)
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer,self)
-        self.rot_vel = 0.5
+        self.subscribers = dict.fromkeys(neighbors)
+        self.rot_vel = 0.7
         self.linear_vel = 1.0
-        self.timer = self.create_timer(1.0,self.on_timer)
-        self.publisher = self.create_publisher(Twist, '/'+self.agent+'/cmd_vel',1)
-        
-           
+        self.neighbor_headings = dict.fromkeys(neighbors)
+        self.timer = self.create_timer(0.2,self.on_timer)
+        self.publisher = self.create_publisher(Twist, '/'+self.agent_name+'/cmd_vel',1)
+        self.create_subscribers()
+
     # Dock subscription callback
     def dockCallback(self, msg: DockStatus):
         self.is_docked = msg.is_docked
-
-
+    def create_subscribers(self):
+    #Creates subscribers to each neighbors pose.  Sends the pose and the neighbor id to the pose_callback function to handle the data.    
+    #################################################################################################################################
+        #If Mocap mode:
+        if self.mode == 0:       
+            for neighbor in self.neighbors:
+                neighbor_name = self.namespace+str(neighbor)
+                neighbor_name = neighbor_name.replace('ro','turtle')
+                print(self.agent_name+' has neighbor: '+neighbor_name)
+                try:
+                    pose_subscriber = self.create_subscription(
+                        PoseStamped,
+                        '/vrpn_mocap/'+neighbor_name+'/pose',
+                        lambda msg,name = neighbor :self.pose_callback(msg,name),
+                        qos_profile_sensor_data)
+                    self.subscribers[neighbor] = pose_subscriber
+                    print("Adding subscriber:")
+                    print("  topic: ", '/vrpn_mocap/'+neighbor_name+'/pose')
+                    
+                except:
+                    print('no subscription was made.')   
+        if self.mode == 1:
+             for neighbor in self.neighbors:
+                neighbor_name = self.namespace+str(neighbor)
+                try:
+                    pose_subscriber = self.create_subscription(
+                        TFMessage,
+                        '/tf/'+neighbor_name+'/pose',
+                        lambda msg,name = neighbor :self.pose_callback(msg,name),
+                        qos_profile_sensor_data)
+                    self.subscribers[neighbor] = pose_subscriber
+                    print("Adding subscriber:")
+                    print("  topic: ", '/vrpn_mocap/'+neighbor_name+'/pose')
+                except:
+                    print('no subscription was made.')
+        if self.mode == 3:
+             for neighbor in self.neighbors:
+                neighbor_name = self.namespace+str(neighbor)
+                try:
+                    pose_subscriber = self.create_subscription(
+                        TFMessage,
+                        '/neighbor_name/tf',
+                        lambda msg,name = neighbor :self.pose_callback(msg,name),
+                        qos_profile_sensor_data)
+                    self.subscribers[neighbor] = pose_subscriber
+                    print("Adding subscriber:")
+                    print("  topic: ", '/'+neighbor_name+'/tf')
+                except:
+                    print('no subscription was made.')                        
+    def pose_callback(self, msg,neighbor):
+    # For each neighbor's pose, stores the (x,y) coordinates in self.X[neighbor]. If the neighbor is this agent, store the agent heading as "self.heading"
+    #This callback runs every time a pose is published to the agent's subscribers, so it continuously updates the positions of neighbors.
+    ####################################################################################################################################
+        """ callback function to get the pose from mocap data """
+        # If mocap mode:
+        if self.mode == 0:
+            x, y = msg.pose.position.x, msg.pose.position.y
+            self.neighbor_headings[neighbor] = quaternion_to_heading_angle(msg.pose.orientation)
+        #If sim mode:
+        elif self.mode ==1:
+            x,y = msg.pose.pose.position.x, msg.pose.pose.position.y
+        elif self.mode ==3:
+            x,y = msg.transform.translation.x,msg.transform.translation.y
+        if neighbor == self.id:
+            if self.mode ==0:
+                self.heading = quaternion_to_heading_angle(msg.pose.orientation)
+            elif self.mode ==1:
+                self.heading = quaternion_to_heading_angle(msg.pose.pose.orientation)
+        self.X[neighbor] = np.array((x,y))  
     # Set User LEDs for TurtleBot 4
     def setLed(self, led, color, period, duty):
         msg = UserLed()
@@ -87,31 +142,17 @@ class AgentController(Node):
     # Calculate direction of leader relative to agent
 
     def on_timer(self):
-      
+    # Periodic function that checks if agent has the positions of all of its neighbors.  If true, then 'self.Controller' is called. 
+    ####################################################################################################################################
+        tracking = True
         for neighbor in self.neighbors:
-            try:
-                #i = self.neighbors.index(neighbor)
-                
-                self.X[neighbor] = np.array((0.0,0.0))
-                if neighbor != self.agent:
-                    t= self.tf_buffer.lookup_transform(self.agent,
-                                                        neighbor,
-                                                        rclpy.time.Time())
-                    self.X[neighbor] = np.array((t.transform.translation.x, t.transform.translation.y))
-             
-                
-                self.trackedNeighbors[neighbor] = 1
-                
-            
-                
-            except TransformException as ex:
-                self.get_logger().info(
-                    f'Could not transform {self.agent} to {neighbor}: {ex}')
-                self.trackedNeighbors[neighbor] = 0
-                pass
+            if self.X[neighbor] is None:
+                tracking = False
+            else:
+                self.trackedNeighbors[neighbor]=1
+        if tracking:
             self.Controller()
                    
-
 #------------ CONTROLLER
 #------------ X[k] is the state of robot{k}
 #------------ Xi is the state of the controlled robot
@@ -121,22 +162,15 @@ class AgentController(Node):
     def Controller(self):
         #Xi = self.X[self.id]
         Xi = np.array((0.0,0.0))
-        dx = np.array((0.0,0.0))
-       # print('Xi=' +str(type(Xi)))
-       # print('dx=' +str(type(dx)))
+        target = np.array((0.0,0.0))
+
         count = 0
         for neighbor in self.neighbors:
-            #k = self.neighbors.index(neighbor)
-            #if k != self.id and self.trackedNeighbors[neighbor] == 1:
-         #   print(type(self.X[neighbor]))
-            print(neighbor+str(self.X[neighbor]))
           
             if neighbor != self.agent and self.trackedNeighbors[neighbor] ==1:
                 Xn = self.X[neighbor]
-          #      print('Xn='+str(type(Xn)))
-          #      print(str(Xi))
-          #      print(str(Xn))
-                dx+= Xn-Xi
+
+                target+= Xn-Xi
                 count+=1
         if count>0:
              dx = dx/count
@@ -148,14 +182,15 @@ class AgentController(Node):
 #------------Need to determine how best to get a displacement of 'dx' through one twist msg..
 #------------Current method: 'rotate then move straight'
 
-    def stateUpdate(self, dx):
+    def stateUpdate(self, dx, target_threshold = 0.1):
         msg = Twist()
         x= dx[0]
         y= dx[1]
-        if math.sqrt(dx[0]**2+dx[1]**2)< 0:
-            print(self.agent+' has reached consensus.'+str(dx))
+        if math.sqrt(dx[0]**2+dx[1]**2)< target_threshold:
+            print(self.agent+' has reached target position '+str(dx))
         else:
             theta = math.atan2(y,x)
+            dtheta  = theta-self.heading
             if theta > 0.2:
                 msg.angular.z = self.rot_vel*theta
                 msg.linear.x = 0.0
