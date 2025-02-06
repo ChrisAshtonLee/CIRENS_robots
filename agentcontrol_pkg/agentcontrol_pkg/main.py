@@ -26,19 +26,17 @@ def main():
     N= dict.fromkeys(agents)
     Fd = dict.fromkeys(agents)
     controllers = []
-
-    for i in range(len(agents)):
-        if i not in leaders:
-            Ni = []
-            Fdi = dict.fromkeys(agents)
-            for j in range(len(A[i])):
-                if A[i][j]  != 0 or i == j:
-                    Ni.append(agents[j])
-                    if opt.lformation:
+    if opt.lformation:
+        for i in range(len(agents)):
+            if i not in leaders:
+                Ni = []
+                Fdi = dict.fromkeys(agents)
+                for j in range(len(A[i])):
+                    if A[i][j]  != 0 or i == j:
+                        Ni.append(agents[j])     
                         Fdi[agents[j]] = .6*formation_distances[i][j]
             N[agents[i]] = Ni
-            if opt.lformation:
-                Fd[agents[i]] = Fdi
+            Fd[agents[i]] = Fdi
     
     
     try:
@@ -48,6 +46,8 @@ def main():
             elif opt.lformation:
             	if agent not in leaders:
                     controller = LF_formation_ctl(agent,neighbors = N[agent],namespace = opt.namespace,leaders = leaders,Fd = Fd[agent], mode = mode) 
+            elif opt.cpih:
+                controller = CPIH
             else:
                 controller = AgentController(agent,neighbors = N[agent])
             controllers.append(controller)
@@ -68,6 +68,7 @@ def get_opt():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-cm","--consensus",action= "store_true",default = False, help = "Consensus Mode")
     group.add_argument("-lfm","--lformation",action = "store_true", default = True, help = " Leader/follower formation mode")
+    group.add_argument("-cpih","--cpih",action = "store_true", default = False, help = "CPIH Mode")
     parser.add_argument("-p", "--path",type = str, default = "src/agentcontrol_pkg/agent_setup/agent_setup (C).yaml",help = "/path/to/agent_setup.yaml")
     parser.add_argument("-a","--agents", nargs = '+',type = int)
     parser.add_argument("-l","--leaders", default = [],nargs = '+',type = int )
@@ -77,7 +78,7 @@ def get_opt():
     num_agents = len(opt.agents)
     with open(opt.path, 'r') as f:
          data = yaml.safe_load(f)
-    if opt.consensus:
+    if opt.consensus or opt.cpih:
         A = np.ones((num_agents,num_agents))
     else:
         A = np.array(data['adjacency_matrix'])
