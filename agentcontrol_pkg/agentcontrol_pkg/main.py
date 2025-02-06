@@ -47,7 +47,7 @@ def main():
             	if agent not in leaders:
                     controller = LF_formation_ctl(agent,neighbors = N[agent],namespace = opt.namespace,leaders = leaders,Fd = Fd[agent], mode = mode) 
             elif opt.cpih:
-                controller = CPIH
+                controller = CPIH_ctl(agent, neighbors = N[agent], namespace = opt.namespace, mode = mode)
             else:
                 controller = AgentController(agent,neighbors = N[agent])
             controllers.append(controller)
