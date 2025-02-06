@@ -28,7 +28,7 @@ def quaternion_to_heading_angle(q):
     return np.arctan2(2 * (q.w * q.z + q.x * q.y),
                       1 - 2 * (q.y * q.y + q.z * q.z))
    
-class LF_formation_ctl(Node):
+class CPIH_ctl(Node):
 
     def __init__(self,i,neighbors,namespace,mode = 0):
         super().__init__('LF_formation_ctl')
