@@ -31,7 +31,7 @@ def quaternion_to_heading_angle(q):
 class CPIH_ctl(Node):
 
     def __init__(self,i,neighbors,namespace,mode = 0):
-        super().__init__('LF_formation_ctl')
+        super().__init__('CPIH_ctl')
         self.namespace = namespace
         self.agent_name = namespace+str(i)
         self.id = i
