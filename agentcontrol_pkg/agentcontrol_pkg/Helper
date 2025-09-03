@@ -1,0 +1,280 @@
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+# --- External Dependency Stub ---
+# NOTE: The C++ code calls an external function 'TV_Projection'.
+# Its implementation was not provided, so this is a placeholder.
+# You should replace this with your actual projection logic.
+def tv_projection(points):
+    """
+    A placeholder for the TV_Projection function.
+    Currently, it just returns the points as-is.
+    """
+    class ProjectionResult:
+        def __init__(self, pts):
+            self.adjusted_points = pts
+    return ProjectionResult(points)
+
+
+class TukeyContour:
+    """
+    Calculates the Tukey depth contour (median region) for a set of 2D points.
+
+    This implementation is a direct translation of the C++ logic, which uses
+    a dual-space transformation to find the region of deepest points.
+    """
+    def __init__(self, input_points: np.ndarray, verbose: bool = False):
+        self.primal_points = np.asarray(input_points)
+        self.verbose = verbose
+        self.median_contour = []
+
+        if self.primal_points.shape[0] < 3:
+            # Not enough points to form a contour
+            return
+
+        # Core calculation happens on initialization
+        self._calculate_contour()
+
+    def _cross_product(self, p1, p2, p3):
+        """Calculates the 2D cross product to determine orientation."""
+        return (p2[0] - p1[0]) * (p3[1] - p1[1]) - (p2[1] - p1[1]) * (p3[0] - p1[0])
+
+    def _monotone_chain_convex_hull(self, points: np.ndarray):
+        """Computes the convex hull of a set of 2D points."""
+        points = sorted(points, key=lambda p: (p[0], p[1]))
+        if len(points) <= 2:
+            return points
+
+        upper_hull, lower_hull = [], []
+        for p in points:
+            while len(lower_hull) >= 2 and self._cross_product(lower_hull[-2], lower_hull[-1], p) <= 0:
+                lower_hull.pop()
+            lower_hull.append(p)
+
+        for p in reversed(points):
+            while len(upper_hull) >= 2 and self._cross_product(upper_hull[-2], upper_hull[-1], p) <= 0:
+                upper_hull.pop()
+            upper_hull.append(p)
+
+        return lower_hull[:-1] + upper_hull[:-1]
+
+    def _calculate_contour(self):
+        """Main logic to compute the Tukey median contour."""
+        # 1. Duality Transform: Point (px, py) -> Line y = px*x - py
+        # We store lines as (m, c) for y = mx + c
+        dual_lines = np.array([[p[0], -p[1]] for p in self.primal_points])
+
+        # 2. Find all intersection points of dual lines
+        dual_intersections = []
+        epsilon = 1e-9
+        for i in range(len(dual_lines)):
+            for j in range(i + 1, len(dual_lines)):
+                m1, c1 = dual_lines[i]
+                m2, c2 = dual_lines[j]
+                if abs(m1 - m2) > epsilon:
+                    x = (c2 - c1) / (m1 - m2)
+                    y = m1 * x + c1
+                    dual_intersections.append((x, y))
+
+        # 3. Calculate the depth of each intersection point
+        max_depth = 0
+        intersections_with_depth = []
+        for p in dual_intersections:
+            px, py = p
+            lines_above = np.sum((dual_lines[:, 0] * px + dual_lines[:, 1]) > py + epsilon)
+            lines_below = np.sum((dual_lines[:, 0] * px + dual_lines[:, 1]) < py - epsilon)
+            depth = min(lines_above, lines_below) + 1 # Depth is 1-indexed
+            intersections_with_depth.append({'point': p, 'depth': depth})
+            if depth > max_depth:
+                max_depth = depth
+
+        if self.verbose:
+            print(f"Calculated depths. Maximum depth (k*) is {max_depth}.")
+
+        # 4. Iteratively find a non-empty contour, starting from max_depth
+        final_contour_points = []
+        k = max_depth
+        while k > 0 and not final_contour_points:
+            median_dual_vertices = [item['point'] for item in intersections_with_depth if item['depth'] >= k]
+            
+            if len(median_dual_vertices) < 3:
+                k -= 1
+                continue
+
+            # 5. Get the convex hull of the k-level region in dual space
+            dual_contour_hull = self._monotone_chain_convex_hull(median_dual_vertices)
+
+            # 6. Transform dual hull vertices back to primal lines
+            primal_contour_lines = np.array([[p[0], -p[1]] for p in dual_contour_hull])
+
+            # 7. Find intersections of these primal lines
+            primal_vertices = []
+            for i in range(len(primal_contour_lines)):
+                for j in range(i + 1, len(primal_contour_lines)):
+                    m1, c1 = primal_contour_lines[i]
+                    m2, c2 = primal_contour_lines[j]
+                    if abs(m1 - m2) > epsilon:
+                        x = (c2 - c1) / (m1 - m2)
+                        y = m1 * x + c1
+                        primal_vertices.append((x, y))
+            
+            # 8. The final contour is the convex hull of these primal intersections
+            if primal_vertices:
+                final_contour_points = self._monotone_chain_convex_hull(primal_vertices)
+            
+            if not final_contour_points:
+                if self.verbose:
+                    print(f"Contour with depth {k} is empty, trying depth {k-1}")
+                k -= 1
+
+        self.median_contour = np.array(final_contour_points)
+
+class ResilientConsensus:
+    """
+    An agent-based simulation for resilient consensus among normal agents
+    in the presence of malicious attackers.
+    """
+    def __init__(self, normal_agents_ids, attacker_ids, initial_positions):
+        self.normal_agents = normal_agents_ids
+        self.attackers = attacker_ids
+        self.n = len(self.normal_agents)
+        self.f = len(self.attackers)
+        self.all_agents_ids = sorted(self.normal_agents + self.attackers)
+        
+        self.X = np.asarray(initial_positions, dtype=float)
+        self.X_history = []
+        self.attack_mode = 2  # 1: Stay still, 2: Active attack
+        
+        # Simulation parameters
+        self.is_running = False
+        self.current_step = 0
+        self.max_steps = 500
+        
+        # Initialize neighborhoods
+        self.Nh = {i: [] for i in self.all_agents_ids}
+        self._initialize_neighborhoods()
+
+    def _initialize_neighborhoods(self):
+        """Set up the neighborhood for each normal agent."""
+        for i in self.normal_agents:
+            # Each normal agent connects to a random subset of other normal agents
+            other_normals = [nid for nid in self.normal_agents if nid != i]
+            random.shuffle(other_normals)
+            num_neighbors = min(len(other_normals), 6)
+            self.Nh[i].extend(other_normals[:num_neighbors])
+            # And to all attackers
+            self.Nh[i].extend(self.attackers)
+    
+    def get_contour_target(self, agent_index, neighbor_points):
+        """
+        Calculates the agent's target by finding the centroid of the
+        Tukey median contour of its neighbors' positions.
+        """
+        tc = TukeyContour(neighbor_points)
+        if tc.median_contour.shape[0] > 0:
+            # Target is the centroid of the median contour
+            center = np.mean(tc.median_contour, axis=0)
+            return center
+        return self.X[agent_index] # Fallback: stay put
+
+    def get_attacker_target(self, attacker_idx):
+        """A simple attack: move to the opposite side of the mean of honest neighbors."""
+        for honest_agent_id in self.normal_agents:
+            # Find an honest agent that listens to this attacker
+            if attacker_idx in self.Nh[honest_agent_id]:
+                honest_neighbors_pos = [self.X[j] for j in self.Nh[honest_agent_id] if j in self.normal_agents]
+                
+                if honest_neighbors_pos:
+                    mean_pos = np.mean(honest_neighbors_pos, axis=0)
+                    # Move away from the mean of the honest agents in that neighborhood
+                    return self.X[attacker_idx] + (self.X[attacker_idx] - mean_pos)
+        return self.X[attacker_idx] # Fallback: stay put
+
+    def start_sim(self, max_steps=500):
+        self.current_step = 0
+        self.max_steps = max_steps
+        self.is_running = True
+        self.X_history = [self.X.copy()]
+
+    def sim_step(self):
+        """Performs a single step of the simulation."""
+        if not self.is_running or self.current_step >= self.max_steps:
+            self.is_running = False
+            return
+
+        dt = 0.01
+        targets = np.zeros_like(self.X)
+
+        # 1. Calculate targets for all agents
+        for i in self.normal_agents:
+            neighbor_indices = self.Nh[i]
+            neighbor_positions = self.X[neighbor_indices]
+            
+            # Apply the projection (placeholder)
+            projection_result = tv_projection(neighbor_positions)
+            adjusted_points = projection_result.adjusted_points
+            
+            targets[i] = self.get_contour_target(i, adjusted_points)
+        
+        for i in self.attackers:
+            if self.attack_mode == 1:
+                targets[i] = self.X[i]
+            elif self.attack_mode == 2:
+                targets[i] = self.get_attacker_target(i)
+            else:
+                targets[i] = self.X[i]
+
+        # 2. Update positions
+        self.X += dt * (targets - self.X)
+        self.X_history.append(self.X.copy())
+        self.current_step += 1
+
+# --- Example Usage and Visualization ---
+if __name__ == '__main__':
+    # --- Configuration ---
+    NUM_NORMAL = 10
+    NUM_ATTACKERS = 4
+    TOTAL_AGENTS = NUM_NORMAL + NUM_ATTACKERS
+
+    normal_ids = list(range(NUM_NORMAL))
+    attacker_ids = list(range(NUM_NORMAL, TOTAL_AGENTS))
+
+    # Random initial positions inside a box
+    initial_pos = np.random.rand(TOTAL_AGENTS, 2) * 10 - 5
+    
+    # --- Simulation Setup ---
+    sim = ResilientConsensus(normal_ids, attacker_ids, initial_pos)
+    sim.start_sim(max_steps=300)
+
+    # --- Run the full simulation ---
+    while sim.is_running:
+        sim.sim_step()
+    print(f"Simulation finished after {sim.current_step} steps.")
+
+    # --- Visualization ---
+    fig, ax = plt.subplots()
+    ax.set_xlim(-10, 10)
+    ax.set_ylim(-10, 10)
+    ax.set_aspect('equal', 'box')
+    ax.set_title("Resilient Consensus Simulation")
+    
+    # Plot initial positions
+    ax.scatter(sim.X_history[0][normal_ids, 0], sim.X_history[0][normal_ids, 1], c='blue', label='Normal (Start)')
+    ax.scatter(sim.X_history[0][attacker_ids, 0], sim.X_history[0][attacker_ids, 1], c='red', label='Attacker (Start)')
+
+    # Plot final positions
+    ax.scatter(sim.X_history[-1][normal_ids, 0], sim.X_history[-1][normal_ids, 1], c='green', label='Normal (End)', marker='x')
+    ax.scatter(sim.X_history[-1][attacker_ids, 0], sim.X_history[-1][attacker_ids, 1], c='orange', label='Attacker (End)', marker='x')
+
+    # Plot trajectories
+    history = np.array(sim.X_history)
+    for i in normal_ids:
+        ax.plot(history[:, i, 0], history[:, i, 1], 'g-', alpha=0.3)
+    for i in attacker_ids:
+        ax.plot(history[:, i, 0], history[:, i, 1], 'r-', alpha=0.3)
+
+    ax.legend()
+    plt.grid(True)
+    plt.show()
