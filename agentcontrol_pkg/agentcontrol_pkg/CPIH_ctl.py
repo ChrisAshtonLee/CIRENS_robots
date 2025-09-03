@@ -17,7 +17,7 @@ from irobot_create_msgs.msg import DockStatus
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy, qos_profile_sensor_data
 from turtlebot4_msgs.msg import UserLed
 import time
-from CPIH import ComputeCPIH_safePoint
+from TukeyMedian import TukeyContour
 #pose.orientation is a quaternion, this converts it to an angle which represents the global heading of the robot
 def quaternion_to_heading_angle(q):
     """
@@ -167,7 +167,11 @@ class LF_formation_ctl(Node):
         self.good_with_neighbors = True
         avoid_heading = []
         closest_collision = 100
-        safepoint = ComputeCPIH_safePoint(X,0.5,self.id)
+        tc = TukeyContour(neighbor_points)
+        if tc.median_contour.shape[0] > 0:
+            # Target is the centroid of the median contour
+            safepoint = np.mean(tc.median_contour, axis=0)
+           
         dx = safepoint - Xi
 
         euclid_diff = math.sqrt(dx[0]**2+dx[1]**2)
@@ -252,4 +256,5 @@ class LF_formation_ctl(Node):
             dtheta = self.headings[self.id]+avoid_heading
         msg.angular.z = dtheta
         msg.linear.x = 0.2
+
         self.publisher.publish(msg)
