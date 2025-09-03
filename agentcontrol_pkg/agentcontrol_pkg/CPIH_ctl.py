@@ -28,10 +28,10 @@ def quaternion_to_heading_angle(q):
     return np.arctan2(2 * (q.w * q.z + q.x * q.y),
                       1 - 2 * (q.y * q.y + q.z * q.z))
    
-class LF_formation_ctl(Node):
+class CPIH_ctl(Node):
 
     def __init__(self,i,neighbors,namespace,mode = 0):
-        super().__init__('LF_formation_ctl')
+        super().__init__('CPIH_ctl')
         self.namespace = namespace
         self.agent_name = namespace+str(i)
         self.id = i
@@ -167,27 +167,27 @@ class LF_formation_ctl(Node):
         self.good_with_neighbors = True
         avoid_heading = []
         closest_collision = 100
-        tc = TukeyContour(neighbor_points)
+        tc = TukeyContour(self.X)
         if tc.median_contour.shape[0] > 0:
             # Target is the centroid of the median contour
             safepoint = np.mean(tc.median_contour, axis=0)
            
         dx = safepoint - Xi
 
-        euclid_diff = math.sqrt(dx[0]**2+dx[1]**2)
+        dist_to_goal = math.sqrt(dx[0]**2+dx[1]**2)
         for neighbor in self.neighbors:
             neighbor_name = self.namespace+str(neighbor)
             if self.trackedNeighbors[neighbor] == 1:
                 diff = self.X[neighbor]- Xi
                 euclid_diff = math.sqrt(diff[0]**2+diff[1]**2)
             ### Checks if current agent is about to run into any of its neighbors before it reaches the goal.  If so, adds the positions of neighbor to an avoid list.
-                if euclid_diff<= self.min_prox and neighbor != self.id:
+                if euclid_diff <= self.min_prox and neighbor != self.id:
                     print(self.agent_name+' is '+str(euclid_diff)+' away from '+neighbor_name)
                     if euclid_diff < closest_collision:
                         closest_collision = euclid_diff
                         avoid_heading = self.headings[neighbor]
              
-        dx = dx
+        
         #if self.id == 1:
            # print('updating to go towards: '+str(dx))
         self.stateUpdate(dx,avoid_heading)
@@ -207,16 +207,16 @@ class LF_formation_ctl(Node):
         theta = math.atan2(y,x)
         dtheta = theta-self.heading
         agent_in_formation = self.good_with_neighbors
-
+        if dist_from_goal<= self.min_prox:
+            self.at_goal = True
         #### If goal is reached, turn on led
-        if agent_in_formation:
+        if self.at_goal:
             self.setLed(0, 1, 500, 0.5)
             print(self.agent_name+' has reached goal.')
             #dtheta = self.leader_headings[0]-self.heading
             msg.linear.x = 0.0
             #msg.angular.z = self.rot_vel*dtheta
-            #self.publisher.publish(msg)
-            self.at_goal = True
+      
         #### If goal is not reached and self.heading is more than .2 radians away from target, create rotate msg.
         else:
             if dtheta > 0.2:
@@ -239,11 +239,7 @@ class LF_formation_ctl(Node):
             else:
                 if not self.at_goal:
                     self.publisher.publish(msg)
-                else:
-                    self.goal_count+=1
-                    if self.goal_count ==20:
-                        self.at_goal= False
-                        self.goal_count=0
+             
             
     
     def reroute(self,avoid_heading):
